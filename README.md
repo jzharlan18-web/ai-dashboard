@@ -20,7 +20,7 @@
 ## 界面预览
 
 <p align="center">
-  <img src="./docs/images/readme/showcase.png" width="100%" alt="Personal AI Workbench 功能总览：总览、每日热点、社媒洞察与抖音数据页面的层叠预览。">
+  <img src="./docs/images/readme/gongzuotai image.png" width="100%" alt="Personal AI Workbench 功能总览：总览、每日热点、社媒洞察与抖音数据页面的层叠预览。">
 </p>
 
 主图展示 Workbench 的核心浏览路径。总览、社媒洞察与抖音账号数据均使用仓库内明确标注的 synthetic demo；每日热点来自截图时的公开匿名 API。
