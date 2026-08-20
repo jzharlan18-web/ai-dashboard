@@ -18,6 +18,7 @@ import {
   IconLoader2,
   IconLayoutSidebarRightCollapse,
   IconLayoutSidebarRightExpand,
+  IconMessageQuestion,
   IconNotes,
   IconPlus,
   IconQuote,
@@ -27,6 +28,8 @@ import {
 } from "@tabler/icons-react";
 import {
   deleteReaderNote,
+  generateQnaMarkdown,
+  exportQnaToIma,
   loadReaderNotes,
   saveReaderNote,
 } from "../../lib/api";
@@ -424,6 +427,189 @@ function ManualIngestPanel({
   );
 }
 
+// ── Q&A 导出面板 ──────────────────────────────────────────────────
+
+function QnaExportPanel({ document, notes, notesLoading }) {
+  const [state, setState] = useState("idle"); // idle | generating | preview | exporting | done | error
+  const [markdown, setMarkdown] = useState("");
+  const [fileName, setFileName] = useState("");
+  const [jobId, setJobId] = useState(null);
+  const [error, setError] = useState(null);
+  const [imaResult, setImaResult] = useState(null);
+
+  const codexNotes = useMemo(
+    () => (notes || []).filter((n) => n.type === "quote" && n.origin === "codex-explanation"),
+    [notes],
+  );
+
+  const handleGenerate = async () => {
+    setState("generating");
+    setError(null);
+    try {
+      const result = await generateQnaMarkdown(document.id);
+      setMarkdown(result.markdown);
+      setFileName(result.fileName);
+      setJobId(result.jobId);
+      setState("preview");
+    } catch (err) {
+      setError(err.message || "生成 Q&A 失败");
+      setState("error");
+    }
+  };
+
+  const handleExport = async () => {
+    setState("exporting");
+    setError(null);
+    try {
+      const result = await exportQnaToIma({ jobId, markdown, fileName });
+      setImaResult(result);
+      setState("done");
+    } catch (err) {
+      setError(err.message || "导出到 IMA 失败");
+      setState("error");
+    }
+  };
+
+  const handleReset = () => {
+    setState("idle");
+    setMarkdown("");
+    setFileName("");
+    setJobId(null);
+    setError(null);
+    setImaResult(null);
+  };
+
+  if (notesLoading) {
+    return (
+      <div className="reader-qna-panel">
+        <div className="reader-qna-panel__loading">
+          <IconLoader2 className="reader-workspace__spinner" aria-hidden="true" />
+          <span>正在加载笔记…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (codexNotes.length === 0) {
+    return (
+      <div className="reader-qna-panel">
+        <div className="reader-qna-panel__empty">
+          <IconMessageQuestion aria-hidden="true" />
+          <p>暂无 AI 辅读笔记</p>
+          <small>请先在「理解」标签页对文章段落提问，积累问答笔记后即可生成结构化 Q&A。</small>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="reader-qna-panel">
+      {state === "idle" && (
+        <div className="reader-qna-panel__idle">
+          <div className="reader-qna-panel__summary">
+            <IconMessageQuestion aria-hidden="true" />
+            <span>检测到 <strong>{codexNotes.length}</strong> 条 AI 辅读问答</span>
+          </div>
+          <p className="reader-qna-panel__desc">
+            将把 AI 辅读中的问答笔记整合为结构化 Markdown Q&A，生成后可预览并一键写入 IMA 知识库。
+          </p>
+          <button
+            type="button"
+            className="reader-workspace__btn reader-workspace__btn--primary"
+            onClick={handleGenerate}
+          >
+            <IconSparkles aria-hidden="true" />
+            生成 Q&A
+          </button>
+        </div>
+      )}
+
+      {state === "generating" && (
+        <div className="reader-qna-panel__generating">
+          <IconLoader2 className="reader-workspace__spinner" aria-hidden="true" />
+          <span>正在生成结构化 Q&A，请稍候…</span>
+          <small>首次生成可能需要 30-60 秒</small>
+        </div>
+      )}
+
+      {state === "preview" && (
+        <div className="reader-qna-panel__preview">
+          <div className="reader-qna-panel__preview-header">
+            <strong>预览 Q&A</strong>
+            <span className="reader-qna-panel__file-name">{fileName}</span>
+          </div>
+          <textarea
+            className="reader-qna-panel__markdown"
+            value={markdown}
+            onChange={(e) => setMarkdown(e.target.value)}
+            rows={16}
+            aria-label="Q&A Markdown 内容（可编辑）"
+          />
+          <div className="reader-qna-panel__actions">
+            <button
+              type="button"
+              className="reader-workspace__btn reader-workspace__btn--primary"
+              onClick={handleExport}
+            >
+              <IconCheck aria-hidden="true" />
+              确认导出到 IMA
+            </button>
+            <button
+              type="button"
+              className="reader-workspace__btn"
+              onClick={handleReset}
+            >
+              重新生成
+            </button>
+          </div>
+        </div>
+      )}
+
+      {state === "exporting" && (
+        <div className="reader-qna-panel__exporting">
+          <IconLoader2 className="reader-workspace__spinner" aria-hidden="true" />
+          <span>正在写入 IMA 知识库…</span>
+        </div>
+      )}
+
+      {state === "done" && (
+        <div className="reader-qna-panel__done">
+          <div className="reader-qna-panel__success">
+            <IconCheck aria-hidden="true" />
+            <strong>已成功写入 IMA</strong>
+          </div>
+          <div className="reader-qna-panel__result">
+            <span>文件名：{imaResult?.title}</span>
+          </div>
+          <button
+            type="button"
+            className="reader-workspace__btn"
+            onClick={handleReset}
+          >
+            再次生成
+          </button>
+        </div>
+      )}
+
+      {state === "error" && (
+        <div className="reader-qna-panel__error">
+          <div className="reader-workspace__error" role="alert">
+            <IconAlertTriangle aria-hidden="true" />
+            <span>{error}</span>
+          </div>
+          <button
+            type="button"
+            className="reader-workspace__btn"
+            onClick={handleReset}
+          >
+            重试
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export const ReaderWorkspace = forwardRef(function ReaderWorkspace({
   document,
   contentHash,
@@ -714,6 +900,7 @@ export const ReaderWorkspace = forwardRef(function ReaderWorkspace({
       "notes",
       ...(eligibleForExplanation ? ["explain"] : []),
       ...(eligibleForIngest ? ["ingest"] : []),
+      ...(eligibleForIngest ? ["qna"] : []),
     ];
     if (availableTabs.length < 2) return;
     event.preventDefault();
@@ -802,6 +989,22 @@ export const ReaderWorkspace = forwardRef(function ReaderWorkspace({
               入库
             </button>
           ) : null}
+          {eligibleForIngest ? (
+            <button
+              id="reader-qna-tab"
+              type="button"
+              role="tab"
+              aria-selected={tab === "qna"}
+              aria-controls="reader-qna-panel"
+              data-reader-tab="qna"
+              tabIndex={tab === "qna" ? 0 : -1}
+              className={tab === "qna" ? "reader-workspace__tab reader-workspace__tab--active" : "reader-workspace__tab"}
+              onClick={() => switchTab("qna")}
+            >
+              <IconMessageQuestion aria-hidden="true" />
+              问答
+            </button>
+          ) : null}
         </div>
         <button
           type="button"
@@ -876,6 +1079,20 @@ export const ReaderWorkspace = forwardRef(function ReaderWorkspace({
               notesError={loadError}
               onBeforePrepare={flush}
               getNotes={() => notesRef.current}
+            />
+          </section>
+        ) : null}
+        {eligibleForIngest ? (
+          <section
+            id="reader-qna-panel"
+            role="tabpanel"
+            aria-labelledby="reader-qna-tab"
+            hidden={tab !== "qna"}
+          >
+            <QnaExportPanel
+              document={document}
+              notes={notes}
+              notesLoading={loading}
             />
           </section>
         ) : null}

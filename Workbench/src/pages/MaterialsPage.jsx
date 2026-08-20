@@ -6,16 +6,20 @@ import {
   IconChevronRight,
   IconFolder,
   IconSearch,
+  IconTrash,
   IconX,
 } from "@tabler/icons-react";
 import { MaterialDocumentRow } from "../components/materials/MaterialDocumentRow";
 import { PageHeader } from "../components/PageHeader";
 import {
   addMaterialToReadingQueue,
+  clearOrphanMaterials,
+  deleteMaterialFile,
   loadMaterialFolder,
   loadMaterialReadingQueue,
   loadMaterialsHome,
   removeMaterialFromReadingQueue,
+  setMaterialReadingState,
 } from "../lib/api";
 
 const ROOT_PATH = "10_raw";
@@ -118,8 +122,10 @@ export function MaterialsPage({ onOpenDocument }) {
     setMutationError(null);
     setPendingIds((current) => new Set(current).add(item.id));
     try {
-      if (item.isQueued) {
+      if (item.isRead) {
         await removeMaterialFromReadingQueue(item.id);
+      } else if (item.isQueued) {
+        await setMaterialReadingState(item.id, "read");
       } else {
         await addMaterialToReadingQueue(item.id, item.contentHash);
       }
@@ -132,6 +138,34 @@ export function MaterialsPage({ onOpenDocument }) {
         next.delete(item.id);
         return next;
       });
+    }
+  };
+
+  const handleDelete = async (item) => {
+    if (!item?.id || pendingIds.has(item.id)) return;
+    setMutationError(null);
+    setPendingIds((current) => new Set(current).add(item.id));
+    try {
+      await deleteMaterialFile(item.id);
+      await reload({ quiet: true });
+    } catch (error) {
+      setMutationError(error);
+    } finally {
+      setPendingIds((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
+    }
+  };
+
+  const handleClearOrphans = async () => {
+    setMutationError(null);
+    try {
+      await clearOrphanMaterials();
+      await reload({ quiet: true });
+    } catch (error) {
+      setMutationError(error);
     }
   };
 
@@ -240,9 +274,24 @@ export function MaterialsPage({ onOpenDocument }) {
                 <span className="eyebrow">READING QUEUE</span>
                 <h2>我的待看</h2>
               </div>
-              <button className="materials-section__link" onClick={openQueue} type="button">
-                查看全部 <IconChevronRight size={15} />
-              </button>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {isHome && (
+                  <button
+                    className="materials-clear-orphan-btn"
+                    onClick={() => {
+                      if (confirm("清除所有已不存在的待看记录？")) handleClearOrphans();
+                    }}
+                    title="清除清单中已无对应文件的孤儿条目"
+                    type="button"
+                  >
+                    <IconTrash size={14} />
+                    <span>清除</span>
+                  </button>
+                )}
+                <button className="materials-section__link" onClick={openQueue} type="button">
+                  查看全部 <IconChevronRight size={15} />
+                </button>
+              </div>
             </div>
             {homeQueue.length > 0 ? (
               <div className="material-list">
@@ -251,6 +300,7 @@ export function MaterialsPage({ onOpenDocument }) {
                     item={item}
                     key={item.id}
                     onOpen={onOpenDocument}
+                    onDelete={handleDelete}
                     onToggleQueue={toggleQueue}
                     pending={pendingIds.has(item.id)}
                     showQueuedAt
@@ -290,6 +340,7 @@ export function MaterialsPage({ onOpenDocument }) {
                     item={item}
                     key={item.id}
                     onOpen={onOpenDocument}
+                    onDelete={handleDelete}
                     onToggleQueue={toggleQueue}
                     pending={pendingIds.has(item.id)}
                   />
@@ -356,6 +407,7 @@ export function MaterialsPage({ onOpenDocument }) {
                     item={item}
                     key={item.id}
                     onOpen={onOpenDocument}
+                    onDelete={handleDelete}
                     onToggleQueue={toggleQueue}
                     pending={pendingIds.has(item.id)}
                     showQueuedAt={isQueue}

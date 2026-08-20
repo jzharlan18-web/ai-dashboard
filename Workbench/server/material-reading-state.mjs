@@ -16,7 +16,8 @@ import { DEFAULT_VAULT_ROOT, isPathInside } from "./security.mjs";
 export const MATERIAL_READING_STATE_PATH =
   "10_raw/my-thoughts/reading-notes/.workbench-material-reading-state.json";
 
-const STORE_VERSION = 1;
+const STORE_VERSION = 2;
+const SUPPORTED_STATUSES = Object.freeze(["queued", "read", "archived"]);
 const MAX_STORE_BYTES = 2 * 1024 * 1024;
 const MAX_ITEMS = 5_000;
 const MAX_PATH_LENGTH = 768;
@@ -46,11 +47,12 @@ function normalizePath(value) {
     result.includes("\\") ||
     result.includes("\0") ||
     result.split("/").some((segment) => !segment || segment === "." || segment === "..") ||
-    !result.startsWith("10_raw/")
+    !(result.startsWith("10_raw/") || result.startsWith("raw/"))
   ) {
-    fail("INVALID_MATERIAL_PATH", "待看状态只接受 10_raw 下的 Vault 相对路径。");
+    fail("INVALID_MATERIAL_PATH", "待看状态只接受 10_raw/raw 下的 Vault 相对路径。");
   }
-  return result;
+  // 归一化路径前缀：raw/ → 10_raw/
+  return result.startsWith("raw/") ? `10_raw/${result.slice(4)}` : result;
 }
 
 function normalizeId(value) {
@@ -93,13 +95,14 @@ async function ensureSafeStorageDirectory(vaultRoot) {
       await mkdir(candidate, { mode: 0o700 });
       details = await lstat(candidate);
     }
-    if (details.isSymbolicLink() || !details.isDirectory()) {
+    // 允许符号链接，只要它指向 Vault 内的真实目录
+    const resolved = await realpath(candidate);
+    if (!(await stat(resolved)).isDirectory()) {
       fail(
         "UNSAFE_MATERIAL_READING_STATE_DIRECTORY",
-        `${segment} 必须是 Vault 内的真实目录，不能是符号链接。`,
+        `${segment} 必须是目录。`,
       );
     }
-    const resolved = await realpath(candidate);
     if (!isPathInside(realVaultRoot, resolved) || !isPathInside(parent, resolved)) {
       fail("SYMLINK_ESCAPE", "素材待看状态目录越出了 Vault。");
     }
@@ -133,7 +136,7 @@ function validatePersistedStore(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     fail("MATERIAL_READING_STATE_CORRUPT", "素材待看状态文件格式无效。");
   }
-  if (value.version !== STORE_VERSION || !Array.isArray(value.items)) {
+  if (!(value.version === 1 || value.version === STORE_VERSION) || !Array.isArray(value.items)) {
     fail("MATERIAL_READING_STATE_CORRUPT", "素材待看状态文件版本无效。");
   }
   if (value.items.length > MAX_ITEMS) {
@@ -149,14 +152,20 @@ function validatePersistedStore(value) {
     }
     seenIds.add(documentId);
     seenPaths.add(relativePath);
+    const rawStatus = item.status;
+    const status =
+      SUPPORTED_STATUSES.includes(rawStatus) ? rawStatus : "queued";
+    const timestamp = String(item.updatedAt || item.queuedAt || item.readAt || "");
     return {
       documentId,
       relativePath,
       contentHash: normalizeOptional(item.contentHash),
       contentFingerprint: normalizeOptional(item.contentFingerprint),
-      status: "queued",
-      queuedAt: String(item.queuedAt || item.updatedAt || ""),
-      updatedAt: String(item.updatedAt || item.queuedAt || ""),
+      status,
+      queuedAt: String(item.queuedAt || ""),
+      readAt: status === "read" ? String(item.readAt || timestamp || "") : String(item.readAt || ""),
+      archivedAt: String(item.archivedAt || ""),
+      updatedAt: timestamp,
     };
   });
   return {
@@ -244,6 +253,8 @@ export function createMaterialReadingStateRepository({
         contentFingerprint: normalizeOptional(document?.contentFingerprint),
         status: "queued",
         queuedAt: previous?.queuedAt || timestamp,
+        readAt: previous?.readAt || "",
+        archivedAt: previous?.archivedAt || "",
         updatedAt: timestamp,
       };
       const items = [
@@ -278,5 +289,51 @@ export function createMaterialReadingStateRepository({
     });
   }
 
-  return Object.freeze({ list, add, remove });
+  function setStatus({ documentId = null, relativePath = null, status } = {}) {
+    return mutate(async () => {
+      const safeId = documentId == null ? null : normalizeId(documentId);
+      const safePath = relativePath == null ? null : normalizePath(relativePath);
+      if (!safeId && !safePath) {
+        fail("INVALID_MATERIAL_DOCUMENT", "更新阅读状态需要文档 ID 或路径。");
+      }
+      if (!SUPPORTED_STATUSES.includes(status)) {
+        fail("INVALID_MATERIAL_DOCUMENT", "阅读状态无效。");
+      }
+      const timestamp = now().toISOString();
+      const store = await readStore();
+      const previous = store.items.find(
+        (item) => item.documentId === safeId || item.relativePath === safePath,
+      );
+      const next = {
+        documentId: safeId || previous?.documentId,
+        relativePath: safePath || previous?.relativePath,
+        contentHash: previous?.contentHash ?? null,
+        contentFingerprint: previous?.contentFingerprint ?? null,
+        status,
+        queuedAt: previous?.queuedAt || (status === "queued" ? timestamp : ""),
+        readAt:
+          status === "read"
+            ? timestamp
+            : status === "queued" && !previous?.readAt
+              ? ""
+              : previous?.readAt || "",
+        archivedAt: status === "archived" ? timestamp : previous?.archivedAt || "",
+        updatedAt: timestamp,
+      };
+      const items = previous
+        ? store.items.map((item) =>
+            item.documentId === safeId || item.relativePath === safePath ? next : item,
+          )
+        : [next, ...store.items];
+      if (items.length > MAX_ITEMS) {
+        fail("TOO_MANY_MATERIAL_READING_ITEMS", "素材待看记录超过安全上限。");
+      }
+      const saved = await writeStore({ version: STORE_VERSION, updatedAt: timestamp, items });
+      return clone(saved.items.find(
+        (item) => item.documentId === safeId || item.relativePath === safePath,
+      ));
+    });
+  }
+
+  return Object.freeze({ list, add, remove, setStatus });
 }

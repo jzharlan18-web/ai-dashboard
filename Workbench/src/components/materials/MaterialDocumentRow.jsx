@@ -2,6 +2,7 @@ import {
   IconBookmark,
   IconClock,
   IconFileText,
+  IconTrash,
   IconUnlink,
 } from "@tabler/icons-react";
 import { formatCompactDate } from "../../lib/format";
@@ -23,14 +24,22 @@ export function MaterialDocumentRow({
   item,
   onOpen,
   onToggleQueue,
+  onDelete,
   pending = false,
   showQueuedAt = false,
 }) {
   const unavailable = item.available === false;
-  const date = showQueuedAt && item.queuedAt ? item.queuedAt : item.updatedAt;
+  const isRead = Boolean(item.isRead);
+  const date = showQueuedAt && item.readAt && isRead
+    ? item.readAt
+    : showQueuedAt && item.queuedAt
+      ? item.queuedAt
+      : item.updatedAt;
 
   return (
-    <article className={`material-row${unavailable ? " material-row--unavailable" : ""}`}>
+    <article
+      className={`material-row${unavailable ? " material-row--unavailable" : ""}${isRead ? " material-row--read" : ""}`}
+    >
       <button
         className="material-row__open"
         disabled={unavailable}
@@ -50,20 +59,52 @@ export function MaterialDocumentRow({
 
       <span className="material-row__date">
         <IconClock aria-hidden="true" size={14} />
-        {showQueuedAt && item.queuedAt ? "加入 " : "更新 "}
+        {isRead ? "读毕 " : showQueuedAt && item.queuedAt ? "加入 " : "更新 "}
         {formatCompactDate(date, false)}
       </span>
 
+      {onDelete && !pending && (
+        <button
+          aria-label={`永久删除"${item.title}"`}
+          className="material-delete-button"
+          disabled={pending}
+          onClick={() => {
+            if (confirm(`确认永久删除"${item.title}"？此操作不可恢复。`)) {
+              onDelete(item);
+            }
+          }}
+          title="永久删除（清理待看记录 + 磁盘文件）"
+          type="button"
+        >
+          <IconTrash aria-hidden="true" size={16} />
+          <span>删除</span>
+        </button>
+      )}
+
       <button
-        aria-label={item.isQueued ? `将“${item.title}”移出待看` : `将“${item.title}”加入待看`}
-        aria-pressed={Boolean(item.isQueued)}
-        className={`material-queue-button${item.isQueued ? " material-queue-button--on" : ""}`}
+        aria-label={
+          isRead
+            ? `将"${item.title}"移出待看`
+            : item.isQueued
+              ? `将"${item.title}"标记为已阅`
+              : `将"${item.title}"加入待看`
+        }
+        aria-pressed={Boolean(item.isQueued || isRead)}
+        className={`material-queue-button${
+          isRead
+            ? " material-queue-button--read"
+            : item.isQueued
+              ? " material-queue-button--on"
+              : ""
+        }`}
         disabled={pending}
         onClick={() => onToggleQueue(item)}
         type="button"
       >
         <IconBookmark aria-hidden="true" size={16} />
-        <span>{pending ? "处理中" : item.isQueued ? "待看中" : "待看"}</span>
+        <span>
+          {pending ? "处理中" : isRead ? "已阅" : item.isQueued ? "待看中" : "待看"}
+        </span>
       </button>
     </article>
   );

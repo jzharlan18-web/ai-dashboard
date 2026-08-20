@@ -35,6 +35,7 @@ import {
   openLocalTarget,
   removeMaterialFromReadingQueue,
   searchVault,
+  setMaterialReadingState,
 } from "../lib/api";
 import { formatFullDate, layerLabel, statusLabel } from "../lib/format";
 import {
@@ -95,7 +96,7 @@ export function DocumentDrawer({ documentId, onClose, onNavigateDocument, readin
   const [quoteDraft, setQuoteDraft] = useState(null);
   const [explanationDraft, setExplanationDraft] = useState(null);
   const [contentHash, setContentHash] = useState(null);
-  const [readingQueue, setReadingQueue] = useState({ queued: false, pending: false });
+  const [readingQueue, setReadingQueue] = useState({ queued: false, read: false, pending: false });
   const [documentRevision, setDocumentRevision] = useState(0);
   const [railCollapsed, setRailCollapsed] = useState(() => {
     try {
@@ -358,19 +359,23 @@ export function DocumentDrawer({ documentId, onClose, onNavigateDocument, readin
 
   useEffect(() => {
     if (!currentDocument || currentDocument.layer !== "raw") {
-      setReadingQueue({ queued: false, pending: false });
+      setReadingQueue({ queued: false, read: false, pending: false });
       return undefined;
     }
     let cancelled = false;
     const refreshQueueState = () => {
       loadMaterialReadingQueue().then((response) => {
         if (cancelled) return;
-        const queued = (response.data?.items ?? []).some(
+        const match = (response.data?.items ?? []).find(
           (item) =>
             item.id === currentDocument.id ||
             item.relativePath === currentDocument.relativePath,
         );
-        setReadingQueue((state) => ({ ...state, queued }));
+        setReadingQueue((state) => ({
+          ...state,
+          queued: Boolean(match),
+          read: match?.status === "read",
+        }));
       });
     };
     refreshQueueState();
@@ -860,23 +865,36 @@ export function DocumentDrawer({ documentId, onClose, onNavigateDocument, readin
 
   const toggleReadingQueue = useCallback(async () => {
     if (!currentDocument || currentDocument.layer !== "raw" || readingQueue.pending) return;
+    const nextStatus = readingQueue.read
+      ? "archived"
+      : readingQueue.queued
+        ? "read"
+        : "queued";
+    const labels = {
+      queued: "已加入待看。",
+      read: "已标记为已阅。",
+      archived: "已移出待看。",
+    };
     setReadingQueue((state) => ({ ...state, pending: true }));
     try {
-      if (readingQueue.queued) {
-        await removeMaterialFromReadingQueue(currentDocument.id);
-      } else {
+      if (nextStatus === "queued") {
         await addMaterialToReadingQueue(currentDocument.id, contentHash || undefined);
+      } else if (nextStatus === "read") {
+        await setMaterialReadingState(currentDocument.id, "read");
+      } else {
+        await removeMaterialFromReadingQueue(currentDocument.id);
       }
-      setReadingQueue({ queued: !readingQueue.queued, pending: false });
-      setNotice({
-        type: "success",
-        message: readingQueue.queued ? "已移出待看。" : "已加入待看。",
+      setReadingQueue({
+        queued: nextStatus === "queued" || nextStatus === "read",
+        read: nextStatus === "read",
+        pending: false,
       });
+      setNotice({ type: "success", message: labels[nextStatus] });
     } catch (error) {
       setReadingQueue((state) => ({ ...state, pending: false }));
-      setNotice({ type: "error", message: error?.message || "待看状态更新失败。" });
+      setNotice({ type: "error", message: error?.message || "阅读状态更新失败。" });
     }
-  }, [contentHash, currentDocument, readingQueue.pending, readingQueue.queued]);
+  }, [contentHash, currentDocument, readingQueue.pending, readingQueue.queued, readingQueue.read]);
 
   if (!documentId || !active) return null;
 
@@ -926,15 +944,29 @@ export function DocumentDrawer({ documentId, onClose, onNavigateDocument, readin
             <>
               {currentDocument.layer === "raw" ? (
                 <button
-                  aria-pressed={readingQueue.queued}
-                  className={`reader__queue${readingQueue.queued ? " reader__queue--on" : ""}`}
+                  aria-pressed={readingQueue.queued || readingQueue.read}
+                  className={`reader__queue${readingQueue.read ? " reader__queue--read" : readingQueue.queued ? " reader__queue--on" : ""}`}
                   disabled={readingQueue.pending}
                   onClick={toggleReadingQueue}
-                  title={readingQueue.queued ? "移出待看" : "加入待看"}
+                  title={
+                    readingQueue.read
+                      ? "移出待看（保留阅读记录）"
+                      : readingQueue.queued
+                        ? "标记为已阅"
+                        : "加入待看"
+                  }
                   type="button"
                 >
                   <IconBookmark aria-hidden="true" />
-                  <span>{readingQueue.pending ? "处理中" : readingQueue.queued ? "待看中" : "待看"}</span>
+                  <span>
+                    {readingQueue.pending
+                      ? "处理中"
+                      : readingQueue.read
+                        ? "已阅"
+                        : readingQueue.queued
+                          ? "待看中"
+                          : "待看"}
+                  </span>
                 </button>
               ) : null}
               <button

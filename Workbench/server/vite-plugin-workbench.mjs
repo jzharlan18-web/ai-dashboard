@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,6 +46,10 @@ import {
 } from "./wiki-ingest-runner.mjs";
 import { createVaultSyncService } from "./vault-sync.mjs";
 import { loadAttentionStrategy } from "./public-config.mjs";
+import {
+  generateQnAMarkdown,
+  exportQnaToIma,
+} from "./qna-to-ima.mjs";
 
 const workbenchRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const defaultVaultRoot = path.resolve(
@@ -66,6 +70,7 @@ const imageContentTypes = {
   webp: "image/webp",
 };
 const maximumVaultImageBytes = 8 * 1024 * 1024;
+const qnaJobStore = new Map(); // jobId → { markdown, fileName, documentId, createdAt }
 const readerImageAllowedRoots = [
   "10_raw",
   "30_self_media",
@@ -1073,6 +1078,72 @@ export function workbenchApiPlugin({
             return json(res, 200, { removed });
           }
 
+          if (req.method === "PATCH" && materialQueueMatch) {
+            const documentId = decodeURIComponent(materialQueueMatch[1]);
+            const body = await readJson(req, 16 * 1024);
+            assertAllowedObjectKeys(
+              body,
+              new Set(["status"]),
+              "INVALID_MATERIAL_READING_REQUEST",
+            );
+            const document = await indexedReaderDocument(documentId);
+            if (document.layer !== "raw") {
+              const error = new Error("只有素材层文档可以更新阅读状态。");
+              error.code = "INVALID_MATERIAL_DOCUMENT";
+              throw error;
+            }
+            const updated = await materialReadingState.setStatus({
+              documentId,
+              relativePath: document.relativePath,
+              status: body.status,
+            });
+            vaultSync.notifyPaths([MATERIAL_READING_STATE_PATH]);
+            return json(res, 200, updated);
+          }
+
+          // POST /api/material-reading-queue/clear-orphans — soft clear orphan queue records
+          if (
+            req.method === "POST" &&
+            url.pathname === "/api/material-reading-queue/clear-orphans"
+          ) {
+            const [currentIdx, currentStore] = await Promise.all([
+              currentIndex(),
+              materialReadingState.list(),
+            ]);
+            const knownIds = new Set(currentIdx.documents.map((d) => d.id));
+            let clearedCount = 0;
+            for (const item of currentStore.items) {
+              if (!knownIds.has(item.documentId)) {
+                const removed = await materialReadingState.remove({
+                  documentId: item.documentId,
+                });
+                if (removed) clearedCount += 1;
+              }
+            }
+            if (clearedCount > 0) vaultSync.notifyPaths([MATERIAL_READING_STATE_PATH]);
+            return json(res, 200, { clearedCount });
+          }
+
+          // DELETE /api/materials/:id — hard delete file + clear queue record
+          if (req.method === "DELETE" && url.pathname.startsWith("/api/materials/")) {
+            const id = decodeURIComponent(url.pathname.slice("/api/materials/".length));
+            const doc = indexedReaderDocument ? await indexedReaderDocument(id).catch(() => null) : null;
+            if (!doc || doc.layer !== "raw") {
+              const err = new Error("只有素材层文档可以删除。");
+              err.code = "INVALID_MATERIAL_DOCUMENT";
+              throw err;
+            }
+            // Validate path stays inside Vault
+            const validated = await validateVaultSelections([doc.relativePath], {
+              vaultRoot,
+            });
+            const selection = validated.selections[0];
+            await rm(selection.realPath, { force: true }).catch(() => {});
+            await materialReadingState.remove({ documentId: id });
+            vaultSync.refresh();
+            return json(res, 200, { deleted: true, relativePath: doc.relativePath });
+          }
+
           if (req.method === "GET" && url.pathname.startsWith("/api/collections/")) {
             const kind = decodeURIComponent(url.pathname.slice("/api/collections/".length));
             return json(res, 200, collectionPayload(await currentIndex(), kind));
@@ -1172,7 +1243,7 @@ export function workbenchApiPlugin({
             const body = await readJson(req, 128 * 1024);
             assertAllowedObjectKeys(
               body,
-              new Set(["documentId", "contentHash", "quoteText", "anchor", "mode", "question"]),
+              new Set(["documentId", "contentHash", "quoteText", "anchor", "mode", "question", "model"]),
             );
             const document = await freshIndexedReaderDocument(body.documentId);
             if (body.contentHash !== document.contentHash) {
@@ -1188,6 +1259,7 @@ export function workbenchApiPlugin({
               anchor: body.anchor,
               mode: body.mode,
               question: body.question,
+              model: body.model,
             });
             return json(res, 202, { explanation });
           }
@@ -1217,7 +1289,7 @@ export function workbenchApiPlugin({
               const body = await readJson(req, 32 * 1024);
               assertAllowedObjectKeys(
                 body,
-                new Set(["documentId", "contentHash", "mode", "question"]),
+                new Set(["documentId", "contentHash", "mode", "question", "model"]),
               );
               const document = await freshIndexedReaderDocument(body.documentId);
               if (body.contentHash !== document.contentHash) {
@@ -1231,6 +1303,7 @@ export function workbenchApiPlugin({
                 contentHash: body.contentHash,
                 mode: body.mode,
                 question: body.question,
+                model: body.model,
               });
               return json(res, 202, { explanation });
             }
@@ -1597,6 +1670,45 @@ export function workbenchApiPlugin({
               req.on("close", unsubscribe);
               return;
             }
+          }
+
+          // ── Q&A 生成 ──────────────────────────────────────────────
+          if (req.method === "POST" && url.pathname === "/api/qna/generate") {
+            const body = await readJson(req);
+            const document = await indexedReaderDocument(body.documentId);
+            if (!document.body?.trim()) {
+              return json(res, 400, {
+                error: { code: "EMPTY_DOCUMENT", message: "文档正文为空，无法生成 Q&A。" },
+              });
+            }
+            // 加载该文档的阅读笔记（含 codex-explanation）
+            const saved = await readerNotes.get(document.id);
+            const notes = saved?.notes ?? [];
+            const result = await generateQnAMarkdown({
+              document: { title: document.title, body: document.body },
+              notes,
+              vaultRoot,
+            });
+            const jobId = `qna-${randomUUID()}`;
+            qnaJobStore.set(jobId, { ...result, documentId: body.documentId, createdAt: Date.now() });
+            setTimeout(() => qnaJobStore.delete(jobId), 300_000);
+            return json(res, 200, { jobId, ...result });
+          }
+
+          // ── Q&A 导出到 IMA ────────────────────────────────────────
+          if (req.method === "POST" && url.pathname === "/api/qna/to-ima") {
+            const body = await readJson(req);
+            const { jobId, markdown, fileName } = body;
+            if (!markdown?.trim()) {
+              return json(res, 400, {
+                error: { code: "EMPTY_QNA", message: "Q&A 内容为空。" },
+              });
+            }
+            const result = await exportQnaToIma({
+              markdown,
+              fileName: fileName || qnaJobStore.get(jobId)?.fileName || "问答.md",
+            });
+            return json(res, 200, { success: true, ...result });
           }
 
           return json(res, 404, { error: { message: "API 路径不存在。" } });

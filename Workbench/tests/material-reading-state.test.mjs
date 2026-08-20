@@ -47,7 +47,7 @@ test("persists, requeues, lists, and removes material reading state", async (t) 
     now: () => times.shift(),
   });
 
-  assert.deepEqual(await repository.list(), { version: 1, updatedAt: null, items: [] });
+  assert.deepEqual(await repository.list(), { version: 2, updatedAt: null, items: [] });
   const created = await repository.add(material());
   assert.equal(created.status, "queued");
   assert.equal(created.queuedAt, "2026-07-27T01:00:00.000Z");
@@ -63,7 +63,7 @@ test("persists, requeues, lists, and removes material reading state", async (t) 
 
   const storePath = path.join(vaultRoot, MATERIAL_READING_STATE_PATH);
   const persisted = JSON.parse(await readFile(storePath, "utf8"));
-  assert.equal(persisted.version, 1);
+  assert.equal(persisted.version, 2);
   assert.equal(persisted.items[0].relativePath, "10_raw/articles/one.md");
   const fileNames = await readdir(path.dirname(storePath));
   assert.equal(fileNames.some((name) => name.endsWith(".tmp")), false);
@@ -174,9 +174,9 @@ test("rejects a reading-state directory that escapes the Vault through a symlink
 
   await assert.rejects(
     repository.add(material()),
-    (error) =>
-      error instanceof MaterialReadingStateError &&
-      error.code === "UNSAFE_MATERIAL_READING_STATE_DIRECTORY",
+      (error) =>
+        error instanceof MaterialReadingStateError &&
+        error.code === "SYMLINK_ESCAPE",
   );
   assert.deepEqual(await readdir(outside), []);
 });

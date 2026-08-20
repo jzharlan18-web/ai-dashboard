@@ -487,7 +487,7 @@ function classifyDocument(relativePath) {
     return { layer: "brainstorm", section, kind };
   }
 
-  if (top === "10_raw") {
+  if (top === "10_raw" || top === "raw") {
     return { layer: "raw", section, kind: "material" };
   }
   if (top === "40_topics") {

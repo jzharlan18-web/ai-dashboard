@@ -80,6 +80,7 @@ const START_INPUT_KEYS = new Set([
   "anchor",
   "mode",
   "question",
+  "model",
 ]);
 
 export class ReaderExplanationsError extends Error {
@@ -346,6 +347,14 @@ function normalizeMode(value, fallback = "understand") {
   return mode;
 }
 
+function normalizeModel(value, fallback = "default") {
+  if (value == null || value === "") return fallback;
+  if (typeof value !== "string") {
+    fail("INVALID_MODEL", "model 必须是字符串。");
+  }
+  return value;
+}
+
 function normalizeQuestion(value, { required = false } = {}) {
   const question = optionalString(
     value,
@@ -362,6 +371,7 @@ function normalizeSelection(input, {
   fallbackQuote = null,
   fallbackAnchor = null,
   fallbackMode = "understand",
+  fallbackModel = "default",
   requireQuestion = false,
 } = {}) {
   exactObjectKeys(input, START_INPUT_KEYS, "阅读解释请求");
@@ -392,7 +402,7 @@ function normalizeSelection(input, {
     contentHash,
     quoteText,
     anchor,
-    mode: normalizeMode(input.mode, fallbackMode),
+    model: normalizeModel(input.model, fallbackModel),
     question: normalizeQuestion(input.question, { required: requireQuestion }),
   };
 }
@@ -709,13 +719,14 @@ async function ensureSafeStorePath(vaultRoot, requestedStorePath) {
       await mkdir(candidate, { mode: 0o700 });
       details = await lstat(candidate);
     }
-    if (details.isSymbolicLink() || !details.isDirectory()) {
+    // 允许符号链接，只要它指向 Vault 内的真实目录
+    const resolved = await realpath(candidate);
+    if (!(await stat(resolved)).isDirectory()) {
       fail(
         "UNSAFE_READER_EXPLANATIONS_STORE",
-        "阅读解释记录目录必须是 Vault 内的真实目录，不能是符号链接。",
+        "阅读解释记录路径必须是目录。",
       );
     }
-    const resolved = await realpath(candidate);
     if (!isPathInside(realVaultRoot, resolved)) {
       fail("UNSAFE_READER_EXPLANATIONS_STORE", "阅读解释记录目录越出了 Vault。");
     }
@@ -1150,6 +1161,7 @@ export function createReaderExplanationsService({
         fallbackQuote: parent.quoteText,
         fallbackAnchor: parent.anchor,
         fallbackMode: parent.mode,
+        fallbackModel: parent.model,
         requireQuestion: true,
       });
       if (selection.document.id !== parent.document.id) {

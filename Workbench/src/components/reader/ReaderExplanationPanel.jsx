@@ -257,6 +257,13 @@ export function ReaderExplanationPanel({
   const [pollEpoch, setPollEpoch] = useState(0);
   const [question, setQuestion] = useState("");
   const [followUpQuestion, setFollowUpQuestion] = useState("");
+  const [selectedModel, setSelectedModel] = useState(() => {
+    try {
+      return localStorage.getItem("workbench:reader-explanation-model") || "gpt-5.6-sol";
+    } catch {
+      return "gpt-5.6-sol";
+    }
+  });
   const consumedDraftsRef = useRef(new Set());
   const documentEpochRef = useRef(0);
   const actionEpochRef = useRef(0);
@@ -388,6 +395,7 @@ export function ReaderExplanationPanel({
         anchor: submitted.anchor,
         mode: "understand",
         question: submitted.question,
+        model: selectedModel,
       });
       if (epoch !== documentEpochRef.current || operation !== actionEpochRef.current) return;
       const created = unwrapRecord(payload);
@@ -586,6 +594,7 @@ export function ReaderExplanationPanel({
         contentHash: boundHash,
         mode: "understand",
         question: trimmed,
+        model: selectedModel,
       });
       if (epoch !== documentEpochRef.current || operation !== actionEpochRef.current) return;
       const created = unwrapRecord(payload);
@@ -801,6 +810,24 @@ export function ReaderExplanationPanel({
             }}
             placeholder="我对这段话的疑问是……（可不填，Codex 会直接解释原文）"
           />
+          <div className="reader-explain__model-selector">
+            <label htmlFor="reader-explain-model">模型</label>
+            <select
+              id="reader-explain-model"
+              value={selectedModel}
+              onChange={(event) => {
+                const next = event.target.value;
+                setSelectedModel(next);
+                try {
+                  localStorage.setItem("workbench:reader-explanation-model", next);
+                } catch {}
+              }}
+            >
+              <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
+              <option value="gpt-5.6-terra">GPT-5.6 Terra</option>
+              <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
+            </select>
+          </div>
           <div>
             <small>{question.length}/500 · 回答会结合当前文档全文</small>
             <button type="submit" disabled={Boolean(action)}>

@@ -31,3 +31,7 @@ secrets.*.json
 Workbench/config/attention.local.json
 个人知识库/10_raw/my-thoughts/reading-notes/*
 !个人知识库/10_raw/my-thoughts/reading-notes/.gitkeep
+
+# 个人私有阅读笔记目录（保持本地，不上传）
+个人知识库/raw/
+个人知识库/10_raw/my-thoughts/reading-notes/.workbench-material-reading-state.json

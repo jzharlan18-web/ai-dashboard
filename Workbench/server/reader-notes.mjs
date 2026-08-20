@@ -401,13 +401,24 @@ async function ensureSafeStorageDirectory(vaultRoot) {
       await mkdir(candidate, { mode: 0o700 });
       details = await lstat(candidate);
     }
-    if (details.isSymbolicLink() || !details.isDirectory()) {
+    // 允许符号链接，只要它指向 Vault 内的真实目录
+    let resolved;
+    try {
+      resolved = await realpath(candidate);
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        await mkdir(candidate, { mode: 0o700 });
+        resolved = candidate;
+      } else {
+        throw error;
+      }
+    }
+    if (!(await stat(resolved)).isDirectory()) {
       fail(
         "UNSAFE_READER_NOTES_DIRECTORY",
-        `${segment} 必须是 Vault 内的真实目录，不能是符号链接。`,
+        `${segment} 必须是目录。`,
       );
     }
-    const resolved = await realpath(candidate);
     if (!isPathInside(realVaultRoot, resolved) || !isPathInside(parent, resolved)) {
       fail("SYMLINK_ESCAPE", "阅读笔记目录越出了 Vault。", {
         path: candidate,

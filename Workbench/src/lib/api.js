@@ -215,6 +215,27 @@ export function removeMaterialFromReadingQueue(documentId) {
   });
 }
 
+export function setMaterialReadingState(documentId, status) {
+  return request(`/api/material-reading-queue/${encodeURIComponent(documentId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
+export function clearOrphanMaterials() {
+  return request("/api/material-reading-queue/clear-orphans", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function deleteMaterialFile(documentId) {
+  return request(`/api/materials/${encodeURIComponent(documentId)}`, {
+    method: "DELETE",
+    body: JSON.stringify({}),
+  });
+}
+
 export function searchVault(query, filters = {}) {
   const search = new URLSearchParams({ q: query });
   Object.entries(filters).forEach(([key, value]) => {
@@ -500,4 +521,23 @@ export function confirmWorkflowJob(jobId) {
 
 export function createJobEventSource(jobId) {
   return new EventSource(`/api/workflows/jobs/${encodeURIComponent(jobId)}/events`);
+}
+
+// ── Q&A 生成与 IMA 导出 ──────────────────────────────────────────
+
+export function generateQnaMarkdown(documentId) {
+  return request("/api/qna/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ documentId }),
+    timeout: 180_000,
+  });
+}
+
+export function exportQnaToIma({ jobId, markdown, fileName }) {
+  return request("/api/qna/to-ima", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jobId, markdown, fileName }),
+  });
 }

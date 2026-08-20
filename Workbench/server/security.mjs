@@ -17,6 +17,7 @@ export const DEFAULT_VAULT_ROOT = path.resolve(
 
 export const DEFAULT_ALLOWED_ROOTS = Object.freeze([
   "10_raw",
+  "raw",
   "40_topics",
   "50_scripts",
   "90_runs",

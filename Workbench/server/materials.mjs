@@ -1,6 +1,7 @@
 import path from "node:path";
 
 const MATERIAL_ROOT = "10_raw";
+const ALT_MATERIAL_ROOT = "raw";
 const DISPLAY_NAMES = Object.freeze({
   articles: "文章",
   "codex-sessions": "Codex 活动",
@@ -31,16 +32,20 @@ function folderId(relativePath) {
 
 function normalizedFolderPath(value = MATERIAL_ROOT) {
   const input = String(value || MATERIAL_ROOT).normalize("NFC").trim();
+  // 将 raw/ 开头的路径转换为 10_raw/ 开头
+  const normalized = input === ALT_MATERIAL_ROOT ? MATERIAL_ROOT
+    : input.startsWith(`${ALT_MATERIAL_ROOT}/`) ? `${MATERIAL_ROOT}${input.slice(ALT_MATERIAL_ROOT.length)}`
+    : input;
   if (
-    path.posix.isAbsolute(input) ||
-    input.includes("\\") ||
-    input.includes("\0") ||
-    input.split("/").some((segment) => !segment || segment === "." || segment === "..") ||
-    (input !== MATERIAL_ROOT && !input.startsWith(`${MATERIAL_ROOT}/`))
+    path.posix.isAbsolute(normalized) ||
+    normalized.includes("\\") ||
+    normalized.includes("\0") ||
+    normalized.split("/").some((segment) => !segment || segment === "." || segment === "..") ||
+    (normalized !== MATERIAL_ROOT && !normalized.startsWith(`${MATERIAL_ROOT}/`))
   ) {
     throw new MaterialsError("INVALID_MATERIAL_FOLDER", "素材目录路径无效。");
   }
-  return input;
+  return normalized;
 }
 
 function displayNameFor(relativePath) {
@@ -72,11 +77,15 @@ function queueMaps(readingState) {
 
 function decorateDocument(document, maps) {
   const queue = maps.byId.get(document.id) ?? maps.byPath.get(document.path) ?? null;
+  const status = queue?.status ?? null;
   return {
     ...document,
     relativePath: document.path,
-    isQueued: Boolean(queue),
+    isQueued: queue != null && status !== "archived",
+    isRead: status === "read",
+    readingStateStatus: status,
     queuedAt: queue?.queuedAt ?? null,
+    readAt: queue?.readAt ?? null,
     readingStateUpdatedAt: queue?.updatedAt ?? null,
   };
 }
@@ -88,7 +97,9 @@ function rawDocuments(index, readingState) {
       (item) =>
         item.layer === "raw" &&
         !item.path.startsWith("10_raw/books/") &&
+        !item.path.startsWith("raw/books/") &&
         !item.path.startsWith("10_raw/social-insights/") &&
+        !item.path.startsWith("raw/social-insights/") &&
         !item.path.split("/").some((segment) => segment.startsWith(".")),
     )
     .map((item) => decorateDocument(item, maps));
@@ -106,6 +117,7 @@ function createFolder(relativePath) {
     childPaths: new Set(),
     descendantFileCount: 0,
     queuedCount: 0,
+    readCount: 0,
     updatedAt: null,
   };
 }
@@ -122,9 +134,13 @@ export function buildMaterialFolderIndex(index, readingState = { items: [] }) {
 
   for (const document of documents) {
     const parentPath = path.posix.dirname(document.path);
-    const relativeParts = parentPath === MATERIAL_ROOT
+    // 将 raw/ 开头的路径转换为 10_raw/ 开头
+    const normalizedParent = parentPath === ALT_MATERIAL_ROOT ? MATERIAL_ROOT
+      : parentPath.startsWith(`${ALT_MATERIAL_ROOT}/`) ? `${MATERIAL_ROOT}${parentPath.slice(ALT_MATERIAL_ROOT.length)}`
+      : parentPath;
+    const relativeParts = normalizedParent === MATERIAL_ROOT
       ? []
-      : parentPath.slice(`${MATERIAL_ROOT}/`.length).split("/");
+      : normalizedParent.slice(`${MATERIAL_ROOT}/`.length).split("/");
     let currentPath = MATERIAL_ROOT;
     ensureFolder(currentPath);
     for (const part of relativeParts) {
@@ -133,13 +149,14 @@ export function buildMaterialFolderIndex(index, readingState = { items: [] }) {
       ensureFolder(nextPath);
       currentPath = nextPath;
     }
-    ensureFolder(parentPath).directFiles.push(document);
+    ensureFolder(normalizedParent).directFiles.push(document);
 
-    let aggregatePath = parentPath;
+    let aggregatePath = normalizedParent;
     while (aggregatePath === MATERIAL_ROOT || aggregatePath.startsWith(`${MATERIAL_ROOT}/`)) {
       const folder = ensureFolder(aggregatePath);
       folder.descendantFileCount += 1;
       if (document.isQueued) folder.queuedCount += 1;
+      if (document.isRead) folder.readCount += 1;
       if (updatedTime(document.updatedAt) > updatedTime(folder.updatedAt)) {
         folder.updatedAt = document.updatedAt;
       }
@@ -161,6 +178,7 @@ export function buildMaterialFolderIndex(index, readingState = { items: [] }) {
       descendantFileCount: folder.descendantFileCount,
       childFolderCount: folder.childPaths.size,
       queuedCount: folder.queuedCount,
+      readCount: folder.readCount,
       updatedAt: folder.updatedAt,
       childFolders: [...folder.childPaths]
         .map((childPath) => folders.get(childPath))
@@ -176,6 +194,7 @@ export function buildMaterialFolderIndex(index, readingState = { items: [] }) {
           descendantFileCount: child.descendantFileCount,
           childFolderCount: child.childPaths.size,
           queuedCount: child.queuedCount,
+          readCount: child.readCount,
           updatedAt: child.updatedAt,
         }))
         .sort((left, right) => left.displayName.localeCompare(right.displayName, "zh-CN")),
@@ -192,8 +211,17 @@ function queuePayload(folderIndex, readingState) {
   return (readingState?.items ?? [])
     .map((queue) => {
       const document = byId.get(queue.documentId) ?? byPath.get(queue.relativePath) ?? null;
+      const isRead = queue.status === "read";
       return document
-        ? { ...document, isQueued: true, queuedAt: queue.queuedAt, available: true }
+        ? {
+            ...document,
+            isQueued: true,
+            isRead,
+            readingStateStatus: queue.status,
+            queuedAt: queue.queuedAt,
+            readAt: queue.readAt,
+            available: true,
+          }
         : {
             id: queue.documentId,
             path: queue.relativePath,
@@ -201,7 +229,10 @@ function queuePayload(folderIndex, readingState) {
             title: path.posix.basename(queue.relativePath, path.posix.extname(queue.relativePath)),
             previewKind: "unsupported",
             isQueued: true,
+            isRead,
+            readingStateStatus: queue.status,
             queuedAt: queue.queuedAt,
+            readAt: queue.readAt,
             available: false,
           };
     })
